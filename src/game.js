@@ -1,0 +1,1302 @@
+/* ============================================================================
+ * 康威生命游戏 · Conway's Game of Life
+ * ----------------------------------------------------------------------------
+ * ONE source, TWO hosts (see build.mjs):
+ *   dynamic Cordis package — evaluated with new Function(...); React/console/
+ *     styles are closure symbols, the timer must be injected, and nothing
+ *     durable is allowed to be written.
+ *   durable npm package — wrapped in window.__ModuleLoader__.load({id, factory}):
+ *     React arrives via require("react"), styles is a local shim, and LIFE_DURABLE
+ *     is true so preferences persist.
+ * Plain JavaScript only: no JSX, no TypeScript, no import/require.
+ *
+ * Seats taken (all three share ONE world owned by the plugin closure):
+ *   sidebar.panellist / id 'life-game'       → the sidebar's own panel row
+ *   main              / key 'life-game'      → the full centre-column board
+ *   shell.overlay     / id 'life-game-float' → the optional floating window
+ * ========================================================================== */
+
+/** True only in the built bundle (build.mjs emits the binding). */
+const DURABLE = typeof LIFE_DURABLE !== 'undefined' && LIFE_DURABLE === true
+
+const NS = 'life-game'
+const PREFS_KEY = 'dsh-life-game:prefs'
+
+/* ----------------------------------------------------------- 显示能力探测 --
+ * Only display METRICS are read here (device pixel ratio, viewport size, and —
+ * when durable — the browser's own preference store); nothing in the product
+ * DOM is touched or selected. Every read is guarded and has a fallback.
+ * ------------------------------------------------------------------------- */
+function readDpr() {
+  try {
+    const w = typeof window !== 'undefined' ? window : null
+    const v = w && w.devicePixelRatio
+    return typeof v === 'number' && v > 0 ? Math.min(v, 3) : 1
+  } catch (err) {
+    return 1
+  }
+}
+
+function readViewport() {
+  try {
+    const w = typeof window !== 'undefined' ? window : null
+    return {
+      w: (w && w.innerWidth) || 1280,
+      h: (w && w.innerHeight) || 800,
+    }
+  } catch (err) {
+    return { w: 1280, h: 800 }
+  }
+}
+
+function clampNum(v, lo, hi) {
+  return v < lo ? lo : v > hi ? hi : v
+}
+
+/* ------------------------------------------------------------------ 文案 -- */
+const LOCALES = ['zh', 'en']
+
+const DICTS = {
+  zh: {
+    'app.name': '生命游戏',
+    'app.title': '康威生命游戏',
+    'hud.gen': '世代',
+    'hud.alive': '存活',
+    'hud.peak': '峰值',
+    'hud.density': '密度',
+    'hud.board': '棋盘',
+    'hud.rateSuffix': ' 代/秒',
+    'hud.paused': '已暂停',
+    'btn.run': '运行',
+    'btn.pause': '暂停',
+    'btn.step': '单步',
+    'btn.random': '随机',
+    'btn.clear': '清空',
+    'btn.reset': '重置',
+    'btn.float': '浮窗',
+    'btn.floatClose': '关闭浮窗',
+    'btn.back': '\u2190 返回对话',
+    'lab.speed': '速度',
+    'lab.board': '棋盘',
+    'lab.cell': '格子',
+    'lab.edge': '边界',
+    'lab.rule': '规则',
+    'lab.brush': '画笔',
+    'lab.patterns': '图案',
+    'opt.auto': '自适应',
+    'opt.s': '小',
+    'opt.m': '中',
+    'opt.l': '大',
+    'opt.xl': '超大',
+    'opt.wrap': '环面',
+    'opt.dead': '死边界',
+    'brush.draw': '\u270e 绘制',
+    'brush.erase': '\u25fb 擦除',
+    'tip.random': '随机汤（约 22% 存活）',
+    'tip.clear': '清空棋盘',
+    'tip.reset': '回到上一次随机的初始局面',
+    'tip.float': '在右下角开一个小窗，边聊天边看',
+    'tip.back': '回到对话',
+    'tip.auto': '按当前栏宽铺满（再点一次会重新适配）',
+    'tip.preset': '格的世界',
+    'tip.cellAuto': '自适应模式下会同时改变世界大小',
+    'tip.cellFixed': '只改变显示大小',
+    'tip.pattern': '点选后在棋盘上单击放置',
+    'foot.hint': '在棋盘上按住拖动即可绘制，右键擦除；选了图案后单击落子。',
+    'float.title': '生命游戏',
+    'float.close': '关闭浮窗',
+    'float.open': '打开浮窗',
+    'rule.life': '生命游戏',
+    'rule.highlife': 'HighLife',
+    'rule.daynight': '昼与夜',
+    'rule.seeds': '种子',
+    'pat.glider': '滑翔机',
+    'pat.lwss': '轻型飞船',
+    'pat.gun': '高斯帕机枪',
+    'pat.rpent': 'R-五连体',
+    'pat.acorn': '橡果',
+    'pat.pulsar': '脉冲星',
+    'pat.diehard': '死亡之舞',
+  },
+  en: {
+    'app.name': 'Life',
+    'app.title': "Conway's Game of Life",
+    'hud.gen': 'Gen',
+    'hud.alive': 'Alive',
+    'hud.peak': 'Peak',
+    'hud.density': 'Density',
+    'hud.board': 'Board',
+    'hud.rateSuffix': ' gen/s',
+    'hud.paused': 'Paused',
+    'btn.run': 'Run',
+    'btn.pause': 'Pause',
+    'btn.step': 'Step',
+    'btn.random': 'Random',
+    'btn.clear': 'Clear',
+    'btn.reset': 'Reset',
+    'btn.float': 'Float',
+    'btn.floatClose': 'Close float',
+    'btn.back': '\u2190 Back to chat',
+    'lab.speed': 'Speed',
+    'lab.board': 'Board',
+    'lab.cell': 'Cell',
+    'lab.edge': 'Edge',
+    'lab.rule': 'Rule',
+    'lab.brush': 'Brush',
+    'lab.patterns': 'Patterns',
+    'opt.auto': 'Fit',
+    'opt.s': 'S',
+    'opt.m': 'M',
+    'opt.l': 'L',
+    'opt.xl': 'XL',
+    'opt.wrap': 'Torus',
+    'opt.dead': 'Dead',
+    'brush.draw': '\u270e Draw',
+    'brush.erase': '\u25fb Erase',
+    'tip.random': 'Random soup (~22% alive)',
+    'tip.clear': 'Empty the board',
+    'tip.reset': 'Back to the last random seed',
+    'tip.float': 'A small window in the corner, so you can keep chatting',
+    'tip.back': 'Back to the conversation',
+    'tip.auto': 'Fill the column (click again to re-fit)',
+    'tip.preset': ' cells',
+    'tip.cellAuto': 'also resizes the world while fitted',
+    'tip.cellFixed': 'display size only',
+    'tip.pattern': 'Pick, then click the board to place',
+    'foot.hint': 'Drag on the board to draw, right-click to erase; pick a pattern and click to place it.',
+    'float.title': 'Life',
+    'float.close': 'Close the float',
+    'float.open': 'Open the float',
+    'rule.life': 'Game of Life',
+    'rule.highlife': 'HighLife',
+    'rule.daynight': 'Day & Night',
+    'rule.seeds': 'Seeds',
+    'pat.glider': 'Glider',
+    'pat.lwss': 'LWSS',
+    'pat.gun': 'Gosper gun',
+    'pat.rpent': 'R-pentomino',
+    'pat.acorn': 'Acorn',
+    'pat.pulsar': 'Pulsar',
+    'pat.diehard': 'Diehard',
+  },
+}
+
+/** Bind the dictionary registry, with a plain-dictionary fallback. */
+function makeTranslate(locale) {
+  if (locale && typeof locale.bind === 'function') {
+    try {
+      const bound = locale.bind(NS)
+      if (typeof bound === 'function') return bound
+    } catch (err) { /* fall through to the static dictionary */ }
+  }
+  const dict = DICTS.zh
+  return (key) => (dict[key] === undefined ? key : dict[key])
+}
+
+/** Register both dictionaries and repaint on a language switch. */
+function installLocale(ctx, locale, store, t0) {
+  const offs = []
+  if (locale && typeof locale.register === 'function') {
+    for (const id of LOCALES) {
+      try {
+        const off = locale.register(NS, id, DICTS[id])
+        if (typeof off === 'function') offs.push(off)
+      } catch (err) {
+        console.error('life-game: locale registration failed for ' + id, err)
+      }
+    }
+  }
+  if (locale && typeof locale.subscribe === 'function') {
+    try {
+      const off = locale.subscribe(() => store.patch({ localeRev: store.get().localeRev + 1 }))
+      if (typeof off === 'function') offs.push(off)
+    } catch (err) { /* the static dictionary still works */ }
+  }
+  ctx.effect(() => () => {
+    for (const off of offs) {
+      try { off() } catch (err) { /* already disposed */ }
+    }
+  })
+  return t0
+}
+
+/* ------------------------------------------------------------------ 规则 -- */
+/** Build the B/S lookup tables of one rule. */
+function makeRule(birth, survive) {
+  const b = new Uint8Array(9)
+  const s = new Uint8Array(9)
+  for (const n of birth) b[n] = 1
+  for (const n of survive) s[n] = 1
+  return { b: b, s: s }
+}
+
+const RULES = [
+  { key: 'life', name: 'B3/S23', note: 'rule.life', rule: makeRule([3], [2, 3]) },
+  { key: 'highlife', name: 'B36/S23', note: 'rule.highlife', rule: makeRule([3, 6], [2, 3]) },
+  { key: 'daynight', name: 'B3678/S34678', note: 'rule.daynight', rule: makeRule([3, 6, 7, 8], [3, 4, 6, 7, 8]) },
+  { key: 'seeds', name: 'B2/S', note: 'rule.seeds', rule: makeRule([2], []) },
+]
+const RULE_BY_KEY = {}
+for (const r of RULES) RULE_BY_KEY[r.key] = r.rule
+
+/* ------------------------------------------------------------------ 图案 -- */
+/** Cells as [x, y] pairs, authored literally so they can be eyeballed. */
+const PATTERNS = [
+  { key: 'glider', name: 'pat.glider', w: 3, h: 3, cells: [[1, 0], [2, 1], [0, 2], [1, 2], [2, 2]] },
+  {
+    key: 'lwss', name: 'pat.lwss', w: 5, h: 4,
+    cells: [[1, 0], [4, 0], [0, 1], [0, 2], [4, 2], [0, 3], [1, 3], [2, 3], [3, 3]],
+  },
+  {
+    key: 'gun', name: 'pat.gun', w: 36, h: 9,
+    cells: [
+      [24, 0],
+      [22, 1], [24, 1],
+      [12, 2], [13, 2], [20, 2], [21, 2], [34, 2], [35, 2],
+      [11, 3], [15, 3], [20, 3], [21, 3], [34, 3], [35, 3],
+      [0, 4], [1, 4], [10, 4], [16, 4], [20, 4], [21, 4],
+      [0, 5], [1, 5], [10, 5], [14, 5], [16, 5], [17, 5], [22, 5], [24, 5],
+      [10, 6], [16, 6], [24, 6],
+      [11, 7], [15, 7],
+      [12, 8], [13, 8],
+    ],
+  },
+  { key: 'rpent', name: 'pat.rpent', w: 3, h: 3, cells: [[1, 0], [2, 0], [0, 1], [1, 1], [1, 2]] },
+  {
+    key: 'acorn', name: 'pat.acorn', w: 7, h: 3,
+    cells: [[1, 0], [3, 1], [0, 2], [1, 2], [4, 2], [5, 2], [6, 2]],
+  },
+  {
+    key: 'pulsar', name: 'pat.pulsar', w: 13, h: 13,
+    cells: (() => {
+      const out = []
+      for (const y of [0, 5, 7, 12]) for (const x of [2, 3, 4, 8, 9, 10]) out.push([x, y])
+      for (const y of [2, 3, 4, 8, 9, 10]) for (const x of [0, 5, 7, 12]) out.push([x, y])
+      return out
+    })(),
+  },
+  {
+    key: 'diehard', name: 'pat.diehard', w: 8, h: 3,
+    cells: [[6, 0], [0, 1], [1, 1], [1, 2], [5, 2], [6, 2], [7, 2]],
+  },
+]
+const PATTERN_BY_KEY = {}
+for (const p of PATTERNS) PATTERN_BY_KEY[p.key] = p
+
+/** Cell edge lengths offered by the 格子 control (px). */
+const CELL_CHOICES = [6, 7, 8, 9, 10, 12, 14]
+
+/** Board presets, in cells. `auto` fills the column at the current zoom. */
+const SIZE_PRESETS = [
+  { key: 'auto', name: 'opt.auto' },
+  { key: 's', name: 'opt.s', cols: 40, rows: 24 },
+  { key: 'm', name: 'opt.m', cols: 64, rows: 38 },
+  { key: 'l', name: 'opt.l', cols: 98, rows: 58 },
+  { key: 'xl', name: 'opt.xl', cols: 140, rows: 84 },
+]
+const SIZE_BY_KEY = {}
+for (const p of SIZE_PRESETS) SIZE_BY_KEY[p.key] = p
+
+/* -------------------------------------------------------------- 偏好持久 --
+ * View and world preferences are UI state, not plugin configuration, so they
+ * live in the browser's own store — the same split the shipped plugins use.
+ * Only the durable bundle persists; a dynamic package stays process-local, as
+ * its contract requires.
+ * ------------------------------------------------------------------------- */
+const PREF_KEYS = ['sizeKey', 'cell', 'speed', 'wrap', 'rule', 'float', 'floatPos', 'running']
+
+function readPrefs() {
+  const out = {}
+  if (!DURABLE) return out
+  try {
+    const w = typeof window !== 'undefined' ? window : null
+    const raw = w && w.localStorage ? w.localStorage.getItem(PREFS_KEY) : null
+    if (!raw) return out
+    const data = JSON.parse(raw)
+    if (!data || typeof data !== 'object') return out
+    if (typeof data.sizeKey === 'string' && SIZE_BY_KEY[data.sizeKey]) out.sizeKey = data.sizeKey
+    if (CELL_CHOICES.indexOf(data.cell) >= 0) out.cell = data.cell
+    if (typeof data.speed === 'number' && data.speed >= 1 && data.speed <= 120) out.speed = Math.round(data.speed)
+    if (typeof data.wrap === 'boolean') out.wrap = data.wrap
+    if (typeof data.rule === 'string' && RULE_BY_KEY[data.rule]) out.rule = data.rule
+    if (typeof data.running === 'boolean') out.running = data.running
+    if (typeof data.float === 'boolean') out.float = data.float
+    const p = data.floatPos
+    if (p && typeof p.x === 'number' && typeof p.y === 'number' && isFinite(p.x) && isFinite(p.y)) {
+      out.floatPos = { x: Math.round(p.x), y: Math.round(p.y) }
+    }
+  } catch (err) {
+    return out   // corrupt or unavailable storage: run with the defaults
+  }
+  return out
+}
+
+function writePrefs(state) {
+  if (!DURABLE) return
+  try {
+    const w = typeof window !== 'undefined' ? window : null
+    if (!w || !w.localStorage) return
+    const slim = {}
+    for (const k of PREF_KEYS) if (state[k] !== undefined) slim[k] = state[k]
+    w.localStorage.setItem(PREFS_KEY, JSON.stringify(slim))
+  } catch (err) { /* private mode or a full quota: preferences are best-effort */ }
+}
+
+/* ------------------------------------------------------------------ 存储 -- */
+function createStore(initial) {
+  let state = initial
+  const listeners = new Set()
+  return {
+    get: function () { return state },
+    patch: function (p) {
+      state = Object.assign({}, state, p)
+      for (const fn of Array.from(listeners)) fn()
+    },
+    subscribe: function (fn) {
+      listeners.add(fn)
+      return () => { listeners.delete(fn) }
+    },
+  }
+}
+
+function useStore(store) {
+  const pair = React.useState(store.get())
+  React.useEffect(() => store.subscribe(() => pair[1](store.get())), [store])
+  return pair[0]
+}
+
+/* ------------------------------------------------------------------ 世界 -- */
+/**
+ * One world, shared by every view. Canvases attach to it and the plugin's own
+ * clock drives it, so closing or leaving a view never disturbs the state — and
+ * with no view attached nothing steps at all (an unwatched world costs zero).
+ */
+function createSim(store, theme) {
+  let cols = 0
+  let rows = 0
+  let cells = null
+  let next = null
+  let age = null
+  let seed = null
+  let gen = 0
+  let pop = 0
+  let peak = 0
+  let acc = 0
+  let last = 0
+  let pub = 0
+  let prefDirty = false
+  let prefSavedAt = 0
+  const boards = new Map()
+  const charts = new Map()
+  const hist = []
+
+  const FALLBACK = {
+    bg: '#11141a', alive: '#4c8dff', grid: 'rgba(255,255,255,.10)', axis: 'rgba(255,255,255,.14)',
+  }
+
+  /** Resolve the canvas colours from the live theme snapshot. */
+  function palette() {
+    const p = Object.assign({}, FALLBACK)
+    try {
+      const snap = theme && theme.getTheme()
+      const tk = snap && snap.active && snap.active.tokens
+      if (tk) {
+        if (tk['--dsw-alias-bg-base']) p.bg = tk['--dsw-alias-bg-base']
+        if (tk['--dsw-alias-brand-primary']) p.alive = tk['--dsw-alias-brand-primary']
+        if (tk['--dsw-alias-border-l1']) p.grid = tk['--dsw-alias-border-l1']
+        if (tk['--dsw-alias-label-secondary']) p.axis = tk['--dsw-alias-label-secondary']
+      }
+    } catch (err) { /* keep the fallbacks */ }
+    return p
+  }
+
+  const api = {
+    get cols() { return cols },
+    get rows() { return rows },
+    get gen() { return gen },
+    get pop() { return pop },
+    get peak() { return peak },
+    get watched() { return boards.size > 0 },
+  }
+
+  /* --------------------------------------------------------------- paint -- */
+  function paintBoard(el, cell, dpr, hover) {
+    const g = el.getContext('2d')
+    if (!g || cells === null) return
+    const W = cols * cell
+    const H = rows * cell
+    const pal = palette()
+    g.setTransform(dpr, 0, 0, dpr, 0, 0)
+    g.clearRect(0, 0, W, H)
+    g.fillStyle = pal.bg
+    g.fillRect(0, 0, W, H)
+    if (cell >= 9) {
+      g.strokeStyle = pal.grid
+      g.lineWidth = 1
+      g.beginPath()
+      for (let x = 1; x < cols; x++) { g.moveTo(x * cell + 0.5, 0); g.lineTo(x * cell + 0.5, H) }
+      for (let y = 1; y < rows; y++) { g.moveTo(0, y * cell + 0.5); g.lineTo(W, y * cell + 0.5) }
+      g.stroke()
+    }
+    const inset = cell >= 10 ? 0.5 : 0
+    const dim = cell - inset * 2
+    g.fillStyle = pal.alive
+    for (let y = 0; y < rows; y++) {
+      const base = y * cols
+      for (let x = 0; x < cols; x++) {
+        if (cells[base + x] === 1) g.fillRect(x * cell + inset, y * cell + inset, dim, dim)
+      }
+    }
+    // Newborn cells flash: age 0 is painted over the base fill in white.
+    g.globalAlpha = 0.62
+    g.fillStyle = '#ffffff'
+    for (let y = 0; y < rows; y++) {
+      const base = y * cols
+      for (let x = 0; x < cols; x++) {
+        if (cells[base + x] === 1 && age[base + x] === 0) g.fillRect(x * cell + inset, y * cell + inset, dim, dim)
+      }
+    }
+    g.globalAlpha = 1
+    if (hover) {
+      const st = store.get()
+      const pat = st.tool === 'stamp' ? PATTERN_BY_KEY[st.pattern] : null
+      if (pat) {
+        const ox = hover.x - Math.floor(pat.w / 2)
+        const oy = hover.y - Math.floor(pat.h / 2)
+        g.globalAlpha = 0.45
+        g.fillStyle = pal.alive
+        for (const pair of pat.cells) {
+          const x = ox + pair[0]
+          const y = oy + pair[1]
+          if (x >= 0 && y >= 0 && x < cols && y < rows) g.fillRect(x * cell, y * cell, cell, cell)
+        }
+        g.globalAlpha = 1
+      }
+      g.strokeStyle = pal.axis
+      g.lineWidth = 1
+      g.strokeRect(hover.x * cell + 0.5, hover.y * cell + 0.5, cell - 1, cell - 1)
+    }
+  }
+
+  function paintChart(el, dpr) {
+    const g = el.getContext('2d')
+    if (!g) return
+    const w = el.width / dpr
+    const h = el.height / dpr
+    const pal = palette()
+    g.setTransform(dpr, 0, 0, dpr, 0, 0)
+    g.clearRect(0, 0, w, h)
+    if (hist.length < 2) return
+    let max = 1
+    for (const v of hist) if (v > max) max = v
+    const step = w / Math.max(1, hist.length - 1)
+    g.beginPath()
+    g.moveTo(0, h - (hist[0] / max) * (h - 4) - 2)
+    for (let i = 1; i < hist.length; i++) g.lineTo(i * step, h - (hist[i] / max) * (h - 4) - 2)
+    g.strokeStyle = pal.alive
+    g.lineWidth = 1.4
+    g.lineJoin = 'round'
+    g.stroke()
+    g.lineTo(w, h)
+    g.lineTo(0, h)
+    g.closePath()
+    g.globalAlpha = 0.14
+    g.fillStyle = pal.alive
+    g.fill()
+    g.globalAlpha = 1
+  }
+
+  function draw() {
+    for (const pair of Array.from(boards)) paintBoard(pair[0], pair[1].cell, pair[1].dpr, pair[1].hover)
+    for (const pair of Array.from(charts)) paintChart(pair[0], pair[1].dpr)
+  }
+  api.draw = draw
+
+  function publish() {
+    if (hist.length === 0 || hist[hist.length - 1] !== pop) {
+      hist.push(pop)
+      if (hist.length > 180) hist.shift()
+    }
+    store.patch({ gen: gen, pop: pop, peak: peak })
+    for (const pair of Array.from(charts)) paintChart(pair[0], pair[1].dpr)
+  }
+  api.publish = publish
+
+  /* ---------------------------------------------------------- view seats -- */
+  api.attachBoard = function (el, cell, dpr) {
+    boards.set(el, { cell: cell, dpr: dpr, hover: null })
+    paintBoard(el, cell, dpr, null)
+  }
+  api.detachBoard = function (el) { boards.delete(el) }
+  api.setHover = function (el, hover) {
+    const meta = boards.get(el)
+    if (!meta) return
+    meta.hover = hover
+    paintBoard(el, meta.cell, meta.dpr, hover)
+  }
+  api.attachChart = function (el, dpr) { charts.set(el, { dpr: dpr }); paintChart(el, dpr) }
+  api.detachChart = function (el) { charts.delete(el) }
+
+  /* --------------------------------------------------------------- world -- */
+  function recount() {
+    let n = 0
+    for (let i = 0; i < cells.length; i++) if (cells[i] === 1) n++
+    pop = n
+    peak = n
+  }
+
+  /** Allocate a new world — the only place existing state is thrown away. */
+  api.alloc = function (c, r, density) {
+    cols = c
+    rows = r
+    cells = new Uint8Array(c * r)
+    next = new Uint8Array(c * r)
+    age = new Uint8Array(c * r)
+    gen = 0
+    acc = 0
+    last = 0
+    api.seed(density === undefined ? 0.22 : density)
+  }
+
+  api.seed = function (density) {
+    for (let i = 0; i < cells.length; i++) cells[i] = Math.random() < density ? 1 : 0
+    age.fill(0)
+    gen = 0
+    recount()
+    seed = cells.slice()
+    hist.length = 0
+    hist.push(pop)
+    draw()
+    publish()
+  }
+
+  api.reset = function () {
+    if (seed === null) return api.seed(0.22)
+    cells.set(seed)
+    age.fill(0)
+    gen = 0
+    recount()
+    hist.length = 0
+    hist.push(pop)
+    draw()
+    publish()
+  }
+
+  api.clear = function () {
+    cells.fill(0)
+    age.fill(0)
+    gen = 0
+    pop = 0
+    peak = 0
+    seed = null
+    hist.length = 0
+    hist.push(0)
+    draw()
+    publish()
+  }
+
+  /**
+   * One generation. Neighbourhood counting is inlined because this is the hot
+   * loop; `wrap` selects a torus (true) or a dead boundary (false).
+   */
+  api.step = function (rule, wrap) {
+    const b = rule.b
+    const s = rule.s
+    let n = 0
+    for (let y = 0; y < rows; y++) {
+      const yUp = y - 1
+      const yDn = y + 1
+      const upOk = wrap || yUp >= 0
+      const dnOk = wrap || yDn < rows
+      const yUpW = yUp < 0 ? rows - 1 : yUp
+      const yDnW = yDn >= rows ? 0 : yDn
+      for (let x = 0; x < cols; x++) {
+        const xLf = x - 1
+        const xRt = x + 1
+        const lfOk = wrap || xLf >= 0
+        const rtOk = wrap || xRt < cols
+        const xLfW = xLf < 0 ? cols - 1 : xLf
+        const xRtW = xRt >= cols ? 0 : xRt
+        let count = 0
+        if (upOk) {
+          const row = yUpW * cols
+          if (lfOk) count += cells[row + xLfW]
+          count += cells[row + x]
+          if (rtOk) count += cells[row + xRtW]
+        }
+        const rowMid = y * cols
+        if (lfOk) count += cells[rowMid + xLfW]
+        if (rtOk) count += cells[rowMid + xRtW]
+        if (dnOk) {
+          const row = yDnW * cols
+          if (lfOk) count += cells[row + xLfW]
+          count += cells[row + x]
+          if (rtOk) count += cells[row + xRtW]
+        }
+        const i = rowMid + x
+        const alive = cells[i]
+        const on = b[count] === 1 || (alive === 1 && s[count] === 1) ? 1 : 0
+        next[i] = on
+        if (on === 1) {
+          n++
+          age[i] = alive === 1 ? (age[i] < 250 ? age[i] + 1 : 250) : 0
+        } else {
+          age[i] = 0
+        }
+      }
+    }
+    const swap = cells
+    cells = next
+    next = swap
+    gen++
+    pop = n
+    if (n > peak) peak = n
+    return pop
+  }
+
+  api.get = function (x, y) {
+    if (cells === null || x < 0 || y < 0 || x >= cols || y >= rows) return 0
+    return cells[y * cols + x]
+  }
+
+  api.set = function (x, y, v) {
+    if (cells === null || x < 0 || y < 0 || x >= cols || y >= rows) return
+    const i = y * cols + x
+    if (cells[i] === v) return
+    cells[i] = v
+    age[i] = 0
+    pop += v === 1 ? 1 : -1
+    if (pop > peak) peak = pop
+  }
+
+  api.stamp = function (pattern, x, y) {
+    const ox = x - Math.floor(pattern.w / 2)
+    const oy = y - Math.floor(pattern.h / 2)
+    for (const pair of pattern.cells) api.set(ox + pair[0], oy + pair[1], 1)
+  }
+
+  /* -------------------------------------------------------------- prefs -- */
+  api.prefsTouched = function () {
+    prefDirty = true
+    prefSavedAt = 0
+  }
+
+  api.flushPrefs = function () {
+    if (!prefDirty) return
+    prefDirty = false
+    writePrefs(store.get())
+  }
+
+  /** The plugin clock: one 16 ms tick, N generations per tick from the speed. */
+  api.tick = function () {
+    const s = store.get()
+    const now = Date.now()
+    if (prefDirty && (prefSavedAt === 0 || now - prefSavedAt > 600)) {
+      prefSavedAt = now
+      api.flushPrefs()
+    }
+    if (boards.size === 0 || !s.running) { last = 0; return }
+    if (last === 0) { last = now; return }
+    let dt = now - last
+    last = now
+    if (dt > 200) dt = 200
+    acc += dt
+    const iv = 1000 / s.speed
+    let steps = 0
+    while (acc >= iv && steps < 24) {
+      api.step(RULE_BY_KEY[s.rule] || RULES[0].rule, s.wrap)
+      acc -= iv
+      steps++
+    }
+    if (steps === 0) return
+    draw()
+    if (now - pub > 110) { pub = now; publish() }
+  }
+
+  return api
+}
+
+/* ------------------------------------------------------------------ 样式 -- */
+const CSS = `
+.lg-scope{color:var(--dsw-alias-label-primary);font-size:12px;line-height:1.5}
+.lg-scope *{box-sizing:border-box}
+.lg-btn{display:inline-flex;align-items:center;gap:5px;height:27px;padding:0 10px;border-radius:8px;cursor:pointer;font:inherit;
+  border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);
+  white-space:nowrap;transition:background .12s,border-color .12s}
+.lg-btn:hover{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l2)}
+.lg-btn.on{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:#fff}
+.lg-btn.ghost{background:transparent}
+.lg-btn .lg-ico{font-size:12px;line-height:1}
+.lg-seg{display:inline-flex;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;overflow:hidden;background:var(--dsw-alias-bg-layer-1)}
+.lg-seg button{height:25px;padding:0 9px;border:0;border-right:1px solid var(--dsw-alias-border-l1);cursor:pointer;font:inherit;
+  background:transparent;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.lg-seg button:last-child{border-right:0}
+.lg-seg button:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.lg-seg button.on{background:var(--dsw-alias-brand-primary);color:#fff;font-weight:500}
+select.lg-btn{padding-right:4px}
+.lg-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.lg-lab{color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.lg-spacer{flex:1 1 auto;min-width:6px}
+.lg-rail{display:flex;align-items:center;gap:8px;width:100%}
+.lg-rail input[type=range]{flex:1 1 auto;min-width:90px;height:18px;accent-color:var(--dsw-alias-brand-primary);cursor:pointer}
+.lg-num{min-width:76px;text-align:right;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+.lg-hud{display:flex;align-items:center;gap:11px;flex-wrap:wrap;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+.lg-hud b{color:var(--dsw-alias-label-primary);font-weight:600}
+.lg-hud .lg-dot{width:3px;height:3px;border-radius:50%;background:var(--dsw-alias-border-l2)}
+.lg-live{display:inline-flex;align-items:center;gap:5px;color:var(--dsw-alias-state-success-primary);font-weight:500}
+.lg-live i{width:6px;height:6px;border-radius:50%;background:currentColor;animation:lg-pulse 1.4s ease-in-out infinite}
+@keyframes lg-pulse{0%,100%{opacity:1}50%{opacity:.25}}
+.lg-chart{display:block;width:100%;height:34px;border-radius:7px;background:var(--dsw-alias-bg-layer-2);
+  border:1px solid var(--dsw-alias-border-l1)}
+.lg-board{display:block;cursor:crosshair;touch-action:none;border-radius:10px;
+  border:1px solid var(--dsw-alias-border-l1);box-shadow:inset 0 1px 3px rgba(0,0,0,.12)}
+.lg-pats{display:flex;gap:5px;flex-wrap:wrap}
+.lg-chip{height:24px;padding:0 9px;border-radius:999px;cursor:pointer;font:inherit;font-size:11px;
+  border:1px dashed var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.lg-chip:hover{border-style:solid;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.lg-chip.on{border-style:solid;background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:#fff;font-weight:500}
+.lg-mark{display:flex;align-items:center;justify-content:center;color:var(--dsw-alias-brand-primary);flex:none}
+/* ---- full centre-column panel ---- */
+.lgp-root{display:flex;flex-direction:column;height:100%;min-height:0;overflow:auto;padding:18px 22px 22px;gap:10px}
+.lgp-head{display:flex;align-items:center;gap:9px;flex:none}
+.lgp-title{font-size:15px;font-weight:650;letter-spacing:-.01em;white-space:nowrap}
+.lgp-sub{color:var(--dsw-alias-label-secondary);font-size:11.5px;white-space:nowrap}
+.lgp-stage{display:flex;justify-content:center;flex:none}
+.lgp-foot{display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex:none}
+/* ---- floating window ---- */
+.lgf-root{position:fixed;pointer-events:auto;border-radius:14px;overflow:hidden;
+  background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);
+  box-shadow:0 24px 64px rgba(0,0,0,.34),0 2px 8px rgba(0,0,0,.18);transition:opacity .15s ease}
+.lgf-head{display:flex;align-items:center;gap:8px;padding:9px 10px 9px 12px;cursor:grab;user-select:none;touch-action:none;
+  background:var(--dsw-specific-sidebar-fill);border-bottom:1px solid var(--dsw-alias-border-l1)}
+.lgf-head:active{cursor:grabbing}
+.lgf-title{font-weight:600;font-size:13px;white-space:nowrap}
+.lgf-badge{font-size:10px;font-weight:500;padding:1px 6px;border-radius:999px;white-space:nowrap;color:var(--dsw-alias-label-secondary);
+  background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1)}
+.lgf-x{flex:none;width:24px;height:24px;display:flex;align-items:center;justify-content:center;border:0;border-radius:7px;
+  background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;font-size:14px;line-height:1;padding:0}
+.lgf-x:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.lgf-body{padding:10px 12px 12px;display:flex;flex-direction:column;gap:9px}
+`
+
+/* ------------------------------------------------------------------ 图标 -- */
+/** A glider, as an inline SVG (coloured by currentColor). */
+function gliderIcon(size) {
+  const pts = [[1, 0], [2, 1], [0, 2], [1, 2], [2, 2]]
+  const kids = pts.map((pair) =>
+    React.createElement('rect', {
+      key: pair[0] + '-' + pair[1],
+      x: pair[0] * 4 + 0.6, y: pair[1] * 4 + 0.6, width: 2.8, height: 2.8, rx: 0.9,
+    }))
+  return React.createElement('svg', {
+    width: size, height: size, viewBox: '0 0 12 12', fill: 'currentColor', 'aria-hidden': 'true', focusable: 'false',
+  }, kids)
+}
+
+/** The sidebar panel row asks only for the glyph — it owns the button. */
+function LifeIcon(props) {
+  return gliderIcon(props.size || 16)
+}
+
+/* -------------------------------------------------------------- 棋盘画布 -- */
+function BoardCanvas(props) {
+  const sim = props.sim
+  const store = props.store
+  const ref = React.useRef(null)
+  const strokeRef = React.useRef(null)
+  const hoverPair = React.useState(null)
+  const hover = hoverPair[0]
+  const setHover = hoverPair[1]
+  const cols = props.cols
+  const rows = props.rows
+  const cell = props.cell
+
+  React.useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const dpr = readDpr()
+    el.width = Math.round(cols * cell * dpr)
+    el.height = Math.round(rows * cell * dpr)
+    el.style.width = (cols * cell) + 'px'
+    el.style.height = (rows * cell) + 'px'
+    sim.attachBoard(el, cell, dpr)
+    return () => sim.detachBoard(el)
+  }, [cols, rows, cell])
+
+  React.useEffect(() => {
+    const el = ref.current
+    if (el) sim.setHover(el, hover)
+  }, [hover])
+
+  function cellAt(e) {
+    const el = ref.current
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    const x = Math.floor((e.clientX - r.left) / cell)
+    const y = Math.floor((e.clientY - r.top) / cell)
+    if (x < 0 || y < 0 || x >= cols || y >= rows) return null
+    return { x: x, y: y }
+  }
+
+  function onDown(e) {
+    const c = cellAt(e)
+    if (!c) return
+    e.preventDefault()
+    const st = store.get()
+    if (st.tool === 'stamp') {
+      const pat = PATTERN_BY_KEY[st.pattern]
+      if (pat) {
+        sim.stamp(pat, c.x, c.y)
+        sim.draw()
+        sim.publish()
+      }
+      return
+    }
+    const erase = e.button === 2 || e.altKey || st.tool === 'erase' || sim.get(c.x, c.y) === 1
+    const brush = erase ? 0 : 1
+    sim.set(c.x, c.y, brush)
+    strokeRef.current = { v: brush }
+    const el = ref.current
+    if (el && el.setPointerCapture) {
+      try { el.setPointerCapture(e.pointerId) } catch (err) { /* ignore */ }
+    }
+    sim.draw()
+  }
+
+  function onMove(e) {
+    const c = cellAt(e)
+    if (c === null) {
+      if (hover !== null) setHover(null)
+    } else if (hover === null || hover.x !== c.x || hover.y !== c.y) {
+      setHover(c)
+    }
+    const stroke = strokeRef.current
+    if (!stroke || !c) return
+    sim.set(c.x, c.y, stroke.v)
+    sim.draw()
+  }
+
+  function onUp() {
+    if (strokeRef.current) {
+      strokeRef.current = null
+      sim.publish()
+    }
+  }
+
+  return React.createElement('canvas', {
+    ref: ref,
+    className: 'lg-board',
+    onPointerDown: onDown,
+    onPointerMove: onMove,
+    onPointerUp: onUp,
+    onPointerLeave: () => { setHover(null); onUp() },
+    onContextMenu: (e) => e.preventDefault(),
+  })
+}
+
+/* ------------------------------------------------------------ 种群曲线 -- */
+function PopulationChart(props) {
+  const sim = props.sim
+  const ref = React.useRef(null)
+  const dep = props.dep
+  React.useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const dpr = readDpr()
+    const host = el.parentElement
+    const w = host && host.clientWidth ? host.clientWidth : 420
+    el.width = Math.round(w * dpr)
+    el.height = Math.round(34 * dpr)
+    el.style.height = '34px'
+    sim.attachChart(el, dpr)
+    return () => sim.detachChart(el)
+  }, [dep])
+  return React.createElement('canvas', { ref: ref, className: 'lg-chart' })
+}
+
+/* ------------------------------------------------------------------ 控件 -- */
+function seg(items, onPick) {
+  return React.createElement('div', { className: 'lg-seg' },
+    items.map((it) => React.createElement('button', {
+      key: it.key, type: 'button', className: it.on ? 'on' : '',
+      title: it.title || undefined,
+      onClick: () => onPick(it.key),
+    }, it.label)))
+}
+
+/** Transport controls, shared by both views. */
+function Transport(props) {
+  const store = props.store
+  const sim = props.sim
+  const st = props.st
+  const t = props.t
+  const rule = RULE_BY_KEY[st.rule] || RULES[0].rule
+  return React.createElement('div', { className: 'lg-row' },
+    React.createElement('button', {
+      className: 'lg-btn' + (st.running ? ' on' : ''),
+      type: 'button',
+      onClick: () => { store.patch({ running: !st.running }); sim.prefsTouched() },
+    }, React.createElement('span', { className: 'lg-ico' }, st.running ? '\u23f8' : '\u25b6'),
+      st.running ? t('btn.pause') : t('btn.run')),
+    React.createElement('button', {
+      className: 'lg-btn', type: 'button',
+      onClick: () => { sim.step(rule, st.wrap); sim.draw(); sim.publish() },
+    }, React.createElement('span', { className: 'lg-ico' }, '\u23ed'), t('btn.step')),
+    React.createElement('button', {
+      className: 'lg-btn', type: 'button', title: t('tip.random'),
+      onClick: () => sim.seed(0.22),
+    }, React.createElement('span', { className: 'lg-ico' }, '\u2684'), t('btn.random')),
+    React.createElement('button', {
+      className: 'lg-btn ghost', type: 'button', title: t('tip.clear'),
+      onClick: () => sim.clear(),
+    }, React.createElement('span', { className: 'lg-ico' }, '\u2726'), t('btn.clear')),
+    React.createElement('button', {
+      className: 'lg-btn ghost', type: 'button', title: t('tip.reset'),
+      onClick: () => sim.reset(),
+    }, React.createElement('span', { className: 'lg-ico' }, '\u21ba'), t('btn.reset')),
+  )
+}
+
+function SpeedRail(props) {
+  const store = props.store
+  const sim = props.sim
+  const st = props.st
+  const t = props.t
+  return React.createElement('div', { className: 'lg-rail' },
+    React.createElement('span', { className: 'lg-lab' }, t('lab.speed')),
+    React.createElement('input', {
+      type: 'range', min: 1, max: 120, step: 1, value: st.speed,
+      onChange: (e) => { store.patch({ speed: Number(e.target.value) }); sim.prefsTouched() },
+    }),
+    React.createElement('span', { className: 'lg-num' }, String(st.speed) + t('hud.rateSuffix')),
+  )
+}
+
+function Hud(props) {
+  const st = props.st
+  const sim = props.sim
+  const t = props.t
+  const total = sim.cols * sim.rows
+  const density = total > 0 ? (st.pop / total) * 100 : 0
+  return React.createElement('div', { className: 'lg-hud' },
+    React.createElement('span', null, t('hud.gen') + ' ', React.createElement('b', null, st.gen.toLocaleString())),
+    React.createElement('span', { className: 'lg-dot' }),
+    React.createElement('span', null, t('hud.alive') + ' ', React.createElement('b', null, st.pop.toLocaleString())),
+    React.createElement('span', { className: 'lg-dot' }),
+    React.createElement('span', null, t('hud.peak') + ' ', React.createElement('b', null, st.peak.toLocaleString())),
+    React.createElement('span', { className: 'lg-dot' }),
+    React.createElement('span', null, t('hud.density') + ' ', React.createElement('b', null, density.toFixed(1) + '%')),
+    React.createElement('span', { className: 'lg-dot' }),
+    React.createElement('span', null, t('hud.board') + ' ', React.createElement('b', null, sim.cols + '\u00d7' + sim.rows)),
+    React.createElement('span', { className: 'lg-spacer' }),
+    st.running
+      ? React.createElement('span', { className: 'lg-live' }, React.createElement('i'), st.speed + t('hud.rateSuffix'))
+      : React.createElement('span', null, t('hud.paused')),
+  )
+}
+
+function PatternRow(props) {
+  const store = props.store
+  const st = props.st
+  const t = props.t
+  return React.createElement('div', { className: 'lg-pats' },
+    React.createElement('span', { className: 'lg-lab' }, t('lab.patterns')),
+    PATTERNS.map((p) => React.createElement('button', {
+      key: p.key, type: 'button',
+      className: 'lg-chip' + (st.tool === 'stamp' && st.pattern === p.key ? ' on' : ''),
+      title: t('tip.pattern') + ' (' + p.w + '\u00d7' + p.h + ')',
+      onClick: () => store.patch({
+        tool: 'stamp',
+        pattern: st.pattern === p.key && st.tool === 'stamp' ? '' : p.key,
+      }),
+    }, t(p.name))),
+  )
+}
+
+/* ------------------------------------------------------- 面板视图（主） -- */
+const PANEL_CHROME = 250   // header + hud + chart + controls, in px
+
+function PanelView(props) {
+  const store = props.store
+  const sim = props.sim
+  const ctx = props.ctx
+  const t = props.t
+  const st = useStore(store)
+  const rootRef = React.useRef(null)
+  const fitReq = React.useState(0)
+  const fitTick = fitReq[0]
+  const setFitTick = fitReq[1]
+
+  /**
+   * Board size and zoom are two separate knobs:
+   *   sizeKey 'auto' → the world is re-fitted to the column (zoom changes how
+   *                    many cells fit, so it changes the world)
+   *   a preset       → the world is exactly that many cells; zoom then only
+   *                    scales the view and never touches the population
+   */
+  React.useEffect(() => {
+    const preset = SIZE_BY_KEY[st.sizeKey]
+    if (preset && preset.cols) {
+      if (preset.cols !== sim.cols || preset.rows !== sim.rows) sim.alloc(preset.cols, preset.rows)
+      return
+    }
+    const el = rootRef.current
+    if (!el) return
+    const w = Math.max(240, el.clientWidth - 46)
+    const h = Math.max(180, el.clientHeight - PANEL_CHROME)
+    const cols = clampNum(Math.floor(w / st.cell), 24, 260)
+    const rows = clampNum(Math.floor(h / st.cell), 16, 170)
+    if (cols !== sim.cols || rows !== sim.rows) sim.alloc(cols, rows)
+  }, [fitTick, st.cell, st.sizeKey])
+
+  const layout = ctx.get('layout')
+  const rule = RULES.filter((r) => r.key === st.rule)[0] || RULES[0]
+
+  return React.createElement('div', { className: 'lg-scope lgp-root', ref: rootRef },
+    React.createElement('div', { className: 'lgp-head' },
+      React.createElement('span', { className: 'lg-mark' }, gliderIcon(18)),
+      React.createElement('span', { className: 'lgp-title' }, t('app.title')),
+      React.createElement('span', { className: 'lgp-sub' }, rule.name),
+      React.createElement('span', { className: 'lg-spacer' }),
+      React.createElement('button', {
+        className: 'lg-btn' + (st.float ? ' on' : ''), type: 'button',
+        title: t('tip.float'),
+        onClick: () => { store.patch({ float: !st.float }); sim.prefsTouched() },
+      }, st.float ? t('btn.floatClose') : t('btn.float')),
+      React.createElement('button', {
+        className: 'lg-btn ghost', type: 'button', title: t('tip.back'),
+        onClick: () => { if (layout && layout.selectPanel) layout.selectPanel(null) },
+      }, t('btn.back')),
+    ),
+
+    React.createElement('div', { className: 'lgp-stage' },
+      React.createElement(BoardCanvas, {
+        sim: sim, store: store, cols: sim.cols, rows: sim.rows, cell: st.cell,
+      }),
+    ),
+
+    React.createElement(Hud, { st: st, sim: sim, t: t }),
+    React.createElement(PopulationChart, { sim: sim, dep: fitTick + ':' + sim.cols + 'x' + sim.rows }),
+
+    React.createElement(Transport, { store: store, sim: sim, st: st, t: t }),
+    React.createElement(SpeedRail, { store: store, sim: sim, st: st, t: t }),
+
+    React.createElement('div', { className: 'lg-row' },
+      React.createElement('span', { className: 'lg-lab' }, t('lab.board')),
+      seg(SIZE_PRESETS.map((p) => ({
+        key: p.key,
+        label: p.cols ? t(p.name) + '\u00a0' + p.cols + '\u00d7' + p.rows : t(p.name),
+        title: p.cols ? p.cols + ' \u00d7 ' + p.rows + t('tip.preset') : t('tip.auto'),
+        on: st.sizeKey === p.key,
+      })), (k) => {
+        store.patch({ sizeKey: k })
+        sim.prefsTouched()
+        if (k === 'auto') setFitTick(fitTick + 1)
+      }),
+    ),
+
+    React.createElement('div', { className: 'lg-row' },
+      React.createElement('span', { className: 'lg-lab' }, t('lab.cell')),
+      seg(CELL_CHOICES.map((c) => ({
+        key: String(c),
+        label: c + 'px',
+        title: c + 'px \u2014 ' + (st.sizeKey === 'auto' ? t('tip.cellAuto') : t('tip.cellFixed')),
+        on: st.cell === c,
+      })), (k) => { store.patch({ cell: Number(k) }); sim.prefsTouched() }),
+      React.createElement('span', { className: 'lg-lab', style: { marginLeft: '4px' } }, t('lab.edge')),
+      seg([{ key: 'wrap', label: t('opt.wrap'), on: st.wrap }, { key: 'dead', label: t('opt.dead'), on: !st.wrap }],
+        (k) => { store.patch({ wrap: k === 'wrap' }); sim.prefsTouched() }),
+    ),
+
+    React.createElement('div', { className: 'lg-row' },
+      React.createElement('span', { className: 'lg-lab' }, t('lab.rule')),
+      React.createElement('select', {
+        className: 'lg-btn', value: st.rule,
+        onChange: (e) => { store.patch({ rule: e.target.value }); sim.prefsTouched() },
+      }, RULES.map((r) => React.createElement('option', { key: r.key, value: r.key }, r.name + ' \u00b7 ' + t(r.note)))),
+      React.createElement('span', { className: 'lg-lab', style: { marginLeft: '4px' } }, t('lab.brush')),
+      seg([{ key: 'draw', label: t('brush.draw'), on: st.tool === 'draw' },
+        { key: 'erase', label: t('brush.erase'), on: st.tool === 'erase' }],
+        (k) => store.patch({ tool: k, pattern: '' })),
+    ),
+
+    React.createElement(PatternRow, { store: store, st: st, t: t }),
+    React.createElement('div', { className: 'lgp-foot' },
+      React.createElement('span', { className: 'lg-lab' }, t('foot.hint')),
+    ),
+  )
+}
+
+/* ------------------------------------------------------- 浮窗视图（可选） -- */
+function FloatView(props) {
+  const store = props.store
+  const sim = props.sim
+  const t = props.t
+  const st = useStore(store)
+  const boxRef = React.useRef(null)
+  const dragRef = React.useRef(null)
+  const posPair = React.useState(st.floatPos || null)
+  const pos = posPair[0]
+  const setPos = posPair[1]
+
+  const cell = clampNum(Math.floor(600 / Math.max(1, sim.cols)), 3, 9)
+  const width = sim.cols * cell
+  const rule = RULES.filter((r) => r.key === st.rule)[0] || RULES[0]
+
+  React.useEffect(() => {
+    if (pos !== null) return
+    const el = boxRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    const vp = readViewport()
+    if (r.width < 40) return
+    setPos({ x: Math.max(12, vp.w - r.width - 26), y: Math.max(12, vp.h - r.height - 92) })
+  }, [pos, sim.cols])
+
+  function onHeadDown(e) {
+    if (e.button !== 0) return
+    const el = boxRef.current
+    const cur = pos || (el ? (() => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.top } })() : { x: 0, y: 0 })
+    dragRef.current = { dx: e.clientX - cur.x, dy: e.clientY - cur.y }
+    if (e.currentTarget.setPointerCapture) {
+      try { e.currentTarget.setPointerCapture(e.pointerId) } catch (err) { /* ignore */ }
+    }
+    e.preventDefault()
+  }
+
+  function onHeadMove(e) {
+    const d = dragRef.current
+    if (!d) return
+    const vp = readViewport()
+    const el = boxRef.current
+    const r = el ? el.getBoundingClientRect() : { width: width + 26, height: 320 }
+    setPos({
+      x: Math.min(Math.max(-r.width + 120, e.clientX - d.dx), vp.w - 120),
+      y: Math.min(Math.max(0, e.clientY - d.dy), vp.h - 40),
+    })
+  }
+
+  function onHeadUp() {
+    if (dragRef.current && pos) {
+      dragRef.current = null
+      store.patch({ floatPos: pos })
+      sim.prefsTouched()
+    }
+    dragRef.current = null
+  }
+
+  return React.createElement('div', {
+    ref: boxRef,
+    className: 'lg-scope lgf-root',
+    style: {
+      left: (pos ? pos.x : 24) + 'px',
+      top: (pos ? pos.y : 24) + 'px',
+      width: (width + 26) + 'px',
+      maxWidth: 'calc(100vw - 16px)',
+      visibility: pos !== null ? 'visible' : 'hidden',
+      opacity: pos !== null ? 1 : 0,
+    },
+  },
+    React.createElement('div', {
+      className: 'lgf-head',
+      onPointerDown: onHeadDown,
+      onPointerMove: onHeadMove,
+      onPointerUp: onHeadUp,
+      onPointerCancel: onHeadUp,
+    },
+      React.createElement('span', { className: 'lg-mark' }, gliderIcon(15)),
+      React.createElement('span', { className: 'lgf-title' }, t('float.title')),
+      React.createElement('span', { className: 'lgf-badge' }, rule.name),
+      React.createElement('span', { className: 'lg-spacer' }),
+      React.createElement('button', {
+        className: 'lgf-x', type: 'button', title: t('float.close'), 'aria-label': t('float.close'),
+        onPointerDown: (e) => e.stopPropagation(),
+        onClick: () => { store.patch({ float: false }); sim.prefsTouched() },
+      }, '\u00d7'),
+    ),
+    React.createElement('div', { className: 'lgf-body' },
+      React.createElement(BoardCanvas, {
+        sim: sim, store: store, cols: sim.cols, rows: sim.rows, cell: cell,
+      }),
+      React.createElement(Hud, { st: st, sim: sim, t: t }),
+      React.createElement(PopulationChart, { sim: sim, dep: 'float:' + sim.cols + 'x' + sim.rows }),
+      React.createElement(Transport, { store: store, sim: sim, st: st, t: t }),
+      React.createElement(SpeedRail, { store: store, sim: sim, st: st, t: t }),
+    ),
+  )
+}
+
+/** The overlay seat re-renders only if it subscribes: it owns the float's life. */
+function FloatHost(props) {
+  const st = useStore(props.store)
+  if (!st.float) return null
+  return React.createElement(FloatView, {
+    store: props.store, sim: props.sim, t: props.t,
+  })
+}
+
+/* --------------------------------------------------------------- 插件体 -- */
+return {
+  name: NS,
+  inject: ['timer'],
+  apply(ctx) {
+    const slots = ctx.get('slots')
+    if (slots === undefined) {
+      console.error('life-game: the slots service is unavailable — no UI seat can be taken')
+      return
+    }
+    const theme = ctx.get('theme')
+    const locale = ctx.get('locale')
+    const t = makeTranslate(locale)
+
+    ctx.effect(() => styles.insert(CSS))
+
+    const prefs = readPrefs()
+    const store = createStore(Object.assign({
+      running: true,
+      speed: 14,
+      sizeKey: 'auto',
+      cell: 9,
+      wrap: true,
+      rule: 'life',
+      tool: 'draw',
+      pattern: '',
+      float: false,
+      localeRev: 0,
+      gen: 0,
+      pop: 0,
+      peak: 0,
+    }, prefs))
+
+    const sim = createSim(store, theme)
+    installLocale(ctx, locale, store, t)
+
+    // A world always exists, so the float works even if the panel was never opened.
+    const preset = SIZE_BY_KEY[store.get().sizeKey]
+    if (preset && preset.cols) sim.alloc(preset.cols, preset.rows)
+    else sim.alloc(104, 64)
+
+    // One clock for the whole plugin; with no view attached it does nothing.
+    ctx.effect(() => ctx.interval(() => sim.tick(), 16))
+    ctx.on('theme/change', () => sim.draw())
+    ctx.effect(() => () => sim.flushPrefs())
+
+    slots.inject('sidebar.panellist', () => slots.register(
+      { name: 'sidebar.panellist', id: NS, order: 0, label: () => t('app.name') },
+      (p) => React.createElement(LifeIcon, { size: p.size, active: p.active }),
+    ))
+
+    slots.inject('main', () => slots.register(
+      { name: 'main', key: NS },
+      () => React.createElement(PanelView, { store: store, sim: sim, ctx: ctx, t: t }),
+    ))
+
+    slots.inject('shell.overlay', () => slots.register(
+      { name: 'shell.overlay', id: NS + '-float', order: 40 },
+      () => React.createElement(FloatHost, { store: store, sim: sim, t: t }),
+    ))
+
+    console.log('life-game: mounted (' + (DURABLE ? 'durable' : 'dynamic') + ', prefs '
+      + (Object.keys(prefs).length > 0 ? 'restored' : 'default') + ')')
+  },
+}

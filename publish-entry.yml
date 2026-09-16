@@ -1,0 +1,8 @@
+# 投稿文件：放进 awesome-dsh-plugin 仓库的 data/plugins/<你的用户名>__dsh-life-game.yml
+# 文件名里的 <owner> 必须与 url 里的 owner 完全一致。
+url: https://github.com/OWNER/dsh-life-game
+name: OWNER/dsh-life-game
+category: fun
+description:
+  en: 'Conway''s Game of Life for DeepSeek Harness: a sidebar panel row opens a drawable centre-column board with four rules, seven stampable patterns and a population chart.'
+  zh: '给 DeepSeek Harness 的康威生命游戏：侧栏一行面板入口，打开一块可绘制的中央棋盘，含四套规则、七个可盖章的图案与一条种群曲线。'

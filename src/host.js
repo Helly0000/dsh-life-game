@@ -1,0 +1,12 @@
+/**
+ * dsh-life-game — host half.
+ *
+ * The game is entirely browser-side: it needs no files, no network and no host
+ * service. This half exists so the profile can mount a row for the package
+ * (and so a future host feature has a place to live). It contributes nothing.
+ */
+
+export const name = 'life-game'
+
+/** No host-side behaviour by design. */
+export function apply() {}
