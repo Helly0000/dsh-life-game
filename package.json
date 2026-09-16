@@ -2,6 +2,11 @@
   "name": "dsh-life-game",
   "version": "0.1.0",
   "description": "Conway's Game of Life for DeepSeek Harness — a sidebar panel row and a full centre-column board with drawing, patterns, four rules and a population chart. / 康威生命游戏：侧栏面板入口 + 中央棋盘，可绘制、可盖图案，含四套规则与种群曲线。",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Helly0000/dsh-life-game.git"
+  },
+  "homepage": "https://github.com/Helly0000/dsh-life-game#readme",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
